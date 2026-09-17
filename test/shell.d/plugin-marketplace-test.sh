@@ -250,3 +250,60 @@ output=$(CATALOG_URL="$missing_catalog" run omarchy-plugin-update "$PLUGIN_ID" -
 [[ $(installed_commit) == $c4 ]] ||
   fail "plugin update keeps checkouts from before verified installs on upstream HEAD" "$output"
 pass "plugin update keeps checkouts from before verified installs on upstream HEAD"
+
+# --- Explicit commits ------------------------------------------------------
+
+reset_install
+output=$(CATALOG_URL="$missing_catalog" run omarchy-plugin-add "$REPO_URL" --commit "$c2" --yes) ||
+  fail "plugin add --commit installs without asking the marketplace" "$output"
+[[ $(installed_commit) == $c2 && $(installed_channel) == "pinned" ]] ||
+  fail "plugin add --commit pins the plugin to the chosen commit" "$output"
+pass "plugin add --commit pins the plugin to the chosen commit"
+
+output=$(CATALOG_URL="$missing_catalog" run omarchy-plugin-update --yes) ||
+  fail "a bulk plugin update succeeds with a pinned plugin" "$output"
+[[ $(installed_commit) == $c2 ]] && grep -qF "omarchy plugin update $PLUGIN_ID --commit" <<<"$output" ||
+  fail "plugin update leaves a pinned plugin at its commit and says how to move it" "$output"
+pass "plugin update leaves a pinned plugin at its commit"
+
+output=$(run omarchy-plugin-update "$PLUGIN_ID" --commit "$c1" --yes) ||
+  fail "plugin update --commit moves a pin backwards" "$output"
+[[ $(installed_commit) == $c1 && $(installed_channel) == "pinned" ]] ||
+  fail "plugin update --commit pins an older commit" "$output"
+output=$(run omarchy-plugin-update "$PLUGIN_ID" --commit "$c3" --yes) ||
+  fail "plugin update --commit moves a pin forwards" "$output"
+[[ $(installed_commit) == $c3 && $(installed_channel) == "pinned" ]] ||
+  fail "plugin update --commit pins a newer commit" "$output"
+pass "plugin update --commit moves a pin in either direction"
+
+output=$(run omarchy-plugin-update "$PLUGIN_ID" --commit "ffffffffffffffffffffffffffffffffffffffff" --yes) &&
+  fail "plugin update --commit refuses a commit upstream does not have" "$output"
+[[ $(installed_commit) == $c3 ]] ||
+  fail "plugin update --commit leaves the pin alone when the commit does not exist" "$output"
+pass "plugin update --commit refuses a commit upstream does not have"
+
+output=$(CATALOG_URL="$missing_catalog" run omarchy-plugin-update "$PLUGIN_ID" --head --yes) ||
+  fail "plugin update --head releases a pin" "$output"
+[[ $(installed_commit) == $c4 && $(installed_channel) == "head" ]] ||
+  fail "plugin update --head releases a pin to follow upstream HEAD" "$output"
+pass "plugin update --head releases a pin to follow upstream HEAD"
+
+reset_install
+output=$(run omarchy-plugin-add "$REPO_URL" --commit "ffffffffffffffffffffffffffffffffffffffff" --yes) &&
+  fail "plugin add --commit refuses a commit upstream does not have" "$output"
+grep -qF "does not exist in" <<<"$output" && [[ ! -e $plugin_dir ]] ||
+  fail "plugin add --commit installs nothing for a commit upstream does not have" "$output"
+pass "plugin add --commit refuses a commit upstream does not have"
+
+output=$(run omarchy-plugin-add "$REPO_URL" --commit "${c1:0:12}" --yes) &&
+  fail "plugin add --commit rejects a short commit id" "$output"
+output=$(run omarchy-plugin-add "$REPO_URL" --commit "$c1" --head --yes) &&
+  fail "plugin add rejects --commit together with --head" "$output"
+[[ ! -e $plugin_dir ]] ||
+  fail "plugin add installs nothing for malformed --commit usage" "$output"
+mkdir -p "$plugins_dir"
+output=$(run omarchy-plugin-update --commit "$c1" --yes) &&
+  fail "plugin update --commit requires a plugin id" "$output"
+grep -qF "needs a plugin id" <<<"$output" ||
+  fail "plugin update --commit explains that it needs a plugin id" "$output"
+pass "plugin add and update reject malformed or conflicting --commit usage"

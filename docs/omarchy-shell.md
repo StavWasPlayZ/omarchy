@@ -50,7 +50,7 @@ Full schema: [`shell/services/PluginRegistry.qml`](../shell/services/PluginRegis
 A plugin is a **git repo** with a `manifest.json` at its root. Adding one
 clones it straight into `~/.config/omarchy/plugins/<id>/`, checked out at the
 plugin marketplace's verified snapshot when the repo has one (`--head` installs
-upstream HEAD instead). The lookup lives in `omarchy-plugin-marketplace-lookup`,
+upstream HEAD instead, and `--commit <sha>` pins an exact commit). The lookup lives in `omarchy-plugin-marketplace-lookup`,
 and the track a plugin was added on is recorded as `omarchy.channel` in its git
 config. Updating fast-forwards along that same track:
 

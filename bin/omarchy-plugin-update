@@ -2,8 +2,8 @@
 
 # omarchy:summary=Update installed git-managed plugins
 # omarchy:group=plugin
-# omarchy:args=[id] [--head] [--yes]
-# omarchy:examples=omarchy plugin update | omarchy plugin update acme.weather --head
+# omarchy:args=[id] [--head | --commit <sha>] [--yes]
+# omarchy:examples=omarchy plugin update | omarchy plugin update acme.weather --head | omarchy plugin update acme.weather --commit <40-character-sha>
 
 set -euo pipefail
 
@@ -13,6 +13,7 @@ export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes}"
 PLUGINS_DIR="$HOME/.config/omarchy/plugins"
 ASSUME_YES=0
 FOLLOW_HEAD=0
+PIN_COMMIT=""
 UPDATED_ANY=0
 
 fail() {
@@ -39,8 +40,9 @@ valid_plugin_id() {
 }
 
 # Plugins added at a marketplace-verified snapshot record the "verified"
-# channel. Everything else, including checkouts made before channels existed,
-# follows upstream HEAD exactly as it always has.
+# channel, and plugins added with --commit record "pinned". Everything else,
+# including checkouts made before channels existed, follows upstream HEAD
+# exactly as it always has.
 plugin_channel() {
   git -C "$PLUGINS_DIR/$1" config --get omarchy.channel 2>/dev/null || echo "head"
 }
@@ -150,6 +152,58 @@ update_from_marketplace() {
   fi
 }
 
+# Move a plugin to a commit the user named and pin it there. Unlike the tracked
+# updates this may move backwards, so it resets rather than fast-forwarding, and
+# only on a checkout without local changes it could throw away.
+pin_to_commit() {
+  local id="$1"
+  local commit="$2"
+  local dir="$PLUGINS_DIR/$id"
+
+  if [[ -n $(git -C "$dir" status --porcelain --untracked-files=no) ]]; then
+    echo "omarchy-plugin-update: cannot pin '$id'; you have local changes in $dir" >&2
+    return 1
+  fi
+
+  if ! git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null; then
+    git -C "$dir" fetch --quiet origin HEAD 2>/dev/null || true
+  fi
+  if ! git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null; then
+    git -C "$dir" fetch --quiet origin "$commit" 2>/dev/null || true
+  fi
+  if ! git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null; then
+    echo "omarchy-plugin-update: commit $commit does not exist upstream for '$id'" >&2
+    return 1
+  fi
+
+  if [[ $(git -C "$dir" rev-parse HEAD) != $commit ]]; then
+    if (( ! ASSUME_YES )); then
+      echo "Changes for $id:"
+      if omarchy-cmd-present delta; then
+        git -C "$dir" diff HEAD "$commit" | delta --paging=never
+      else
+        git -C "$dir" diff HEAD "$commit"
+      fi
+      echo
+      confirm "Pin $id to commit ${commit:0:12}?" || {
+        echo "Skipped $id."
+        return 0
+      }
+    fi
+
+    git -C "$dir" reset --quiet --hard "$commit"
+    if ! omarchy-plugin-validate "$dir"; then
+      git -C "$dir" reset --quiet --hard ORIG_HEAD
+      echo "omarchy-plugin-update: commit ${commit:0:12} of '$id' failed validation; rolled back" >&2
+      return 1
+    fi
+    UPDATED_ANY=1
+  fi
+
+  git -C "$dir" config omarchy.channel pinned
+  echo "Pinned $id to commit ${commit:0:12}."
+}
+
 id=""
 
 while (( $# > 0 )); do
@@ -158,12 +212,17 @@ while (( $# > 0 )); do
     FOLLOW_HEAD=1
     shift
     ;;
+  --commit)
+    (( $# >= 2 )) || fail "--commit needs a commit id"
+    PIN_COMMIT="${2,,}"
+    shift 2
+    ;;
   --yes | -y)
     ASSUME_YES=1
     shift
     ;;
   -h | --help)
-    echo "Usage: omarchy plugin update [id] [--head] [--yes]"
+    echo "Usage: omarchy plugin update [id] [--head | --commit <sha>] [--yes]"
     exit 0
     ;;
   -*)
@@ -176,6 +235,12 @@ while (( $# > 0 )); do
     ;;
   esac
 done
+
+if [[ -n $PIN_COMMIT ]]; then
+  (( ! FOLLOW_HEAD )) || fail "--head and --commit cannot be used together"
+  [[ -n $id ]] || fail "--commit needs a plugin id: omarchy plugin update <id> --commit <sha>"
+  [[ $PIN_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "--commit needs a full 40-character commit id"
+fi
 
 [[ -d $PLUGINS_DIR ]] || fail "no plugins installed"
 
@@ -202,7 +267,7 @@ fi
 # not `git remote get-url`, which applies the user's insteadOf rewrites.
 verified_ids=()
 verified_urls=()
-if (( ! FOLLOW_HEAD )); then
+if (( ! FOLLOW_HEAD )) && [[ -z $PIN_COMMIT ]]; then
   for id in "${targets[@]}"; do
     [[ $(plugin_channel "$id") == "verified" ]] || continue
     verified_ids+=("$id")
@@ -221,17 +286,21 @@ fi
 
 rc=0
 for id in "${targets[@]}"; do
-  if [[ -n ${marketplace[$id]:-} ]]; then
+  dir="$PLUGINS_DIR/$id"
+  if [[ -n $PIN_COMMIT ]]; then
+    pin_to_commit "$id" "$PIN_COMMIT" || rc=1
+  elif [[ -n ${marketplace[$id]:-} ]]; then
     read -r state commit upstream <<<"${marketplace[$id]}"
     update_from_marketplace "$id" "$state" "$commit" "$upstream" || rc=1
+  elif (( ! FOLLOW_HEAD )) && [[ $(plugin_channel "$id") == "pinned" ]]; then
+    echo "$id is pinned to commit $(git -C "$dir" rev-parse --short=12 HEAD); leaving it there. Move the pin with: omarchy plugin update $id --commit <sha>, or follow upstream with: omarchy plugin update $id --head"
   elif update_from_head "$id"; then
-    # --head moves a verified-channel plugin onto upstream HEAD for good, once
+    # --head moves a verified or pinned plugin onto upstream HEAD for good, once
     # it actually reaches HEAD rather than being skipped at the prompt.
-    dir="$PLUGINS_DIR/$id"
-    if (( FOLLOW_HEAD )) && [[ $(plugin_channel "$id") == "verified" ]] &&
+    if (( FOLLOW_HEAD )) && [[ $(plugin_channel "$id") != "head" ]] &&
       [[ $(git -C "$dir" rev-parse HEAD) == $(git -C "$dir" rev-parse FETCH_HEAD) ]]; then
       git -C "$dir" config omarchy.channel head
-      echo "$id now follows upstream HEAD instead of verified snapshots."
+      echo "$id now follows upstream HEAD."
     fi
   else
     rc=1
