@@ -191,7 +191,10 @@ pin_to_commit() {
       }
     fi
 
-    git -C "$dir" reset --quiet --hard "$commit"
+    if ! git -C "$dir" reset --quiet --hard "$commit"; then
+      echo "omarchy-plugin-update: could not move '$id' to commit ${commit:0:12}" >&2
+      return 1
+    fi
     if ! omarchy-plugin-validate "$dir"; then
       git -C "$dir" reset --quiet --hard ORIG_HEAD
       echo "omarchy-plugin-update: commit ${commit:0:12} of '$id' failed validation; rolled back" >&2

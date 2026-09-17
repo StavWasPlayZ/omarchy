@@ -288,6 +288,17 @@ output=$(CATALOG_URL="$missing_catalog" run omarchy-plugin-update "$PLUGIN_ID" -
   fail "plugin update --head releases a pin to follow upstream HEAD" "$output"
 pass "plugin update --head releases a pin to follow upstream HEAD"
 
+# A held index lock makes the reset itself fail, which must not be reported as a pin.
+touch "$plugin_dir/.git/index.lock"
+output=$(run omarchy-plugin-update "$PLUGIN_ID" --commit "$c1" --yes) &&
+  fail "plugin update --commit fails when the checkout cannot be moved" "$output"
+rm -f "$plugin_dir/.git/index.lock"
+[[ $(installed_commit) == $c4 && $(installed_channel) == "head" ]] ||
+  fail "plugin update --commit records no pin when the checkout cannot be moved" "$output"
+grep -qF "Pinned" <<<"$output" &&
+  fail "plugin update --commit does not claim a pin it did not make" "$output"
+pass "plugin update --commit reports a failed move instead of claiming the pin"
+
 reset_install
 output=$(run omarchy-plugin-add "$REPO_URL" --commit "ffffffffffffffffffffffffffffffffffffffff" --yes) &&
   fail "plugin add --commit refuses a commit upstream does not have" "$output"
